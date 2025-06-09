@@ -6,9 +6,18 @@ from pathlib import Path
 from typing import Optional
 from pydantic import Field
 from pydantic_settings import BaseSettings
+from dotenv import load_dotenv
 
 # Корневая директория проекта
 BASE_DIR = Path(__file__).parent.parent
+
+# ЯВНО загружаем ТОЛЬКО .env файл, игнорируя .env.example
+env_file = BASE_DIR / ".env"
+if env_file.exists():
+    load_dotenv(env_file, override=True)
+    print(f"✅ Загружен файл настроек: {env_file}")
+else:
+    print(f"⚠️ Файл {env_file} не найден")
 
 
 class Settings(BaseSettings):
@@ -48,8 +57,8 @@ class Settings(BaseSettings):
     log_file: str = Field("logs/bot.log", env="LOG_FILE")
     
     class Config:
-        env_file = ".env"
-        env_file_encoding = "utf-8"
+        # НЕ указываем env_file чтобы избежать конфликтов
+        extra = "ignore"
 
 
 # Глобальная переменная настроек
