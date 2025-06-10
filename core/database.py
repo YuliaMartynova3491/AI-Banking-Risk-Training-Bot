@@ -394,3 +394,51 @@ class DatabaseService:
 
 # Глобальный экземпляр сервиса
 db_service = DatabaseService()
+
+def save_lesson_session(self, user_id: str, topic_id: str, lesson_id: int, 
+                       material_viewed: str = None, questions: list = None, 
+                       answers: list = None, score: float = 0.0) -> bool:
+    """Сохранить сессию урока в историю"""
+    try:
+        with self.get_session() as session:
+            history_entry = LessonHistory(
+                user_id=user_id,
+                topic_id=topic_id,
+                lesson_id=lesson_id,
+                lesson_material_viewed=material_viewed,
+                questions_asked=questions,
+                answers_given=answers,
+                final_score=score
+            )
+            session.add(history_entry)
+            session.commit()
+            return True
+    except Exception as e:
+        logger.error(f"Ошибка сохранения истории урока: {e}")
+        return False
+
+def get_lesson_history(self, user_id: str, topic_id: str, lesson_id: int) -> List[Dict]:
+    """Получить историю прохождения урока"""
+    try:
+        with self.get_session() as session:
+            history = session.query(LessonHistory).filter(
+                and_(
+                    LessonHistory.user_id == user_id,
+                    LessonHistory.topic_id == topic_id,
+                    LessonHistory.lesson_id == lesson_id
+                )
+            ).order_by(LessonHistory.session_date.desc()).all()
+            
+            return [
+                {
+                    "date": h.session_date.isoformat(),
+                    "material_viewed": h.lesson_material_viewed,
+                    "questions": h.questions_asked,
+                    "answers": h.answers_given,
+                    "score": h.final_score
+                }
+                for h in history
+            ]
+    except Exception as e:
+        logger.error(f"Ошибка получения истории урока: {e}")
+        return []

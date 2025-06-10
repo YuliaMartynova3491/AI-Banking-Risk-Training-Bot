@@ -168,3 +168,20 @@ class GeneratedQuestion(BaseModel):
     source_context: str
     difficulty: str
     confidence_score: float = Field(ge=0.0, le=1.0)
+
+class LessonHistory(Base):
+    """Модель истории прохождения уроков"""
+    __tablename__ = "lesson_history"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(String, index=True, nullable=False)
+    topic_id = Column(String, nullable=False)
+    lesson_id = Column(Integer, nullable=False)
+    session_date = Column(DateTime, default=datetime.utcnow)
+    
+    # Сохраненный контент
+    lesson_material_viewed = Column(Text, nullable=True)  # Материал урока
+    questions_asked = Column(JSON, default=list)  # Вопросы квиза
+    answers_given = Column(JSON, default=list)   # Ответы пользователя
+    final_score = Column(Float, default=0.0)
+    duration_minutes = Column(Integer, default=0)    

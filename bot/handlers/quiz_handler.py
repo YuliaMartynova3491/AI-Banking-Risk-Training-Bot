@@ -1,20 +1,18 @@
 # Файл: bot/handlers/quiz_handler.py
 """
-Обработчик тестирования и оценки знаний - ИСПРАВЛЕННАЯ ВЕРСИЯ 3.0
-- Используются короткие алиасы для callback_data
-- Вынесена функция parse_callback_data в утилиты
+Обработчик тестирования и оценки знаний 
 """
 import logging
 from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import ContextTypes, CallbackQueryHandler
 
 from core.database import db_service
-from config.bot_config import MESSAGES, ALIAS_TO_TOPIC # ИЗМЕНЕНО: Импорт ALIAS_TO_TOPIC
+from config.bot_config import MESSAGES, ALIAS_TO_TOPIC
 from config.settings import settings
 from bot.keyboards.menu_keyboards import get_quiz_keyboard, get_quiz_result_keyboard, get_lesson_start_keyboard
 from services.sticker_service import sticker_service
 from services.adaptive_content_service import adaptive_content_service
-from bot.utils.helpers import parse_callback_data # ИЗМЕНЕНО: Импорт из утилит
+from bot.utils.helpers import parse_callback_data
 
 logger = logging.getLogger(__name__)
 
@@ -25,8 +23,11 @@ async def start_quiz(query: Update, context: ContextTypes.DEFAULT_TYPE, topic_id
     try:
         await query.edit_message_text("🧠 AI генерирует персональные вопросы...")
         
+        # ИСПРАВЛЕНО: Убираем лишние параметры
         questions_data = adaptive_content_service.generate_adaptive_questions(
-            user_id=user_id, topic=topic_id, lesson_id=lesson_id
+            user_id=user_id, 
+            topic=topic_id, 
+            lesson_id=lesson_id
         )
 
         if not questions_data:
@@ -68,7 +69,7 @@ async def handle_quiz_callback(update: Update, context: ContextTypes.DEFAULT_TYP
     data = parse_callback_data(query.data)
     action = data.get("action")
 
-    # ИЗМЕНЕНО: Получаем полный topic_id из короткого алиаса `tid`
+    # Получаем полный topic_id из короткого алиаса `tid`
     topic_id = ALIAS_TO_TOPIC.get(data.get("tid"))
 
     if action == "answer":

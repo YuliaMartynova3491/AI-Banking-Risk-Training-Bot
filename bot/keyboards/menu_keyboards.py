@@ -1,11 +1,9 @@
 """
-Клавиатуры для меню - ИСПРАВЛЕННАЯ ВЕРСИЯ
-- Используется надежный формат callback_data "key:value;"
-- Вместо полного topic_id используется короткий алиас для экономии места
+Клавиатуры для меню
 """
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, ReplyKeyboardMarkup
 from typing import List, Dict, Any
-from config.bot_config import LEARNING_STRUCTURE, TOPIC_ALIASES  # ИЗМЕНЕНО: Импортируем TOPIC_ALIASES
+from config.bot_config import LEARNING_STRUCTURE, TOPIC_ALIASES
 import logging
 
 logger = logging.getLogger(__name__)
@@ -51,7 +49,6 @@ def get_topics_keyboard(user_progress: Dict[str, Any] = None) -> InlineKeyboardM
 
         is_available = topic_id in available_topics
         
-        # ИЗМЕНЕНО: Используем короткий алиас `tid` вместо `topic_id`
         topic_alias = TOPIC_ALIASES.get(topic_id)
         callback_data = create_callback_data("topic", tid=topic_alias) if is_available else "action:topic_locked"
 
@@ -65,10 +62,10 @@ def get_topics_keyboard(user_progress: Dict[str, Any] = None) -> InlineKeyboardM
 
 def get_lesson_start_keyboard(topic_id: str, lesson_id: int) -> InlineKeyboardMarkup:
     """Клавиатура для начала урока"""
-    # ИЗМЕНЕНО: Используем короткий алиас `tid`
     topic_alias = TOPIC_ALIASES.get(topic_id)
     keyboard = [
-        [InlineKeyboardButton("🚀 Начать урок", callback_data=create_callback_data("start_lesson", tid=topic_alias, lesson_id=lesson_id))],
+        [InlineKeyboardButton("🚀 Начать тестирование", callback_data=create_callback_data("start_lesson", tid=topic_alias, lesson_id=lesson_id))],
+        [InlineKeyboardButton("📖 Изучить материал", callback_data=create_callback_data("show_material", tid=topic_alias, lesson_id=lesson_id))],
         [InlineKeyboardButton("❓ Задать вопрос AI", callback_data=create_callback_data("ask_ai", tid=topic_alias, lesson_id=lesson_id))],
         [
             InlineKeyboardButton("◀️ К урокам", callback_data=create_callback_data("back_to_lessons", tid=topic_alias)),
@@ -83,21 +80,17 @@ def get_quiz_keyboard(options: List[str]) -> InlineKeyboardMarkup:
     for i, option in enumerate(options):
         button_text = option if len(option) <= 60 else option[:57] + "..."
         keyboard.append([InlineKeyboardButton(button_text, callback_data=create_callback_data("answer", index=i))])
-    
-    # Заглушка, можно будет реализовать помощь по конкретному вопросу
-    # keyboard.append([InlineKeyboardButton("❓ Помощь AI", callback_data="action:quiz_help")])
     return InlineKeyboardMarkup(keyboard)
 
 def get_quiz_result_keyboard(topic_id: str, lesson_id: int, passed: bool) -> InlineKeyboardMarkup:
     """Клавиатура результатов тестирования"""
-    # ИЗМЕНЕНО: Используем короткий алиас `tid`
     topic_alias = TOPIC_ALIASES.get(topic_id)
     keyboard = []
     if passed:
         keyboard.append([InlineKeyboardButton("🎉 Продолжить обучение", callback_data=create_callback_data("continue_learning", tid=topic_alias))])
     else:
         keyboard.append([InlineKeyboardButton("🔄 Повторить урок", callback_data=create_callback_data("retry_lesson", tid=topic_alias, lesson_id=lesson_id))])
-        keyboard.append([InlineKeyboardButton("📚 Изучить материал", callback_data=create_callback_data("study_material", tid=topic_alias, lesson_id=lesson_id))])
+        keyboard.append([InlineKeyboardButton("📚 Изучить материал", callback_data=create_callback_data("show_material", tid=topic_alias, lesson_id=lesson_id))])
     
     keyboard.append([
         InlineKeyboardButton("◀️ К урокам", callback_data=create_callback_data("back_to_lessons", tid=topic_alias)),
@@ -121,7 +114,6 @@ def get_ai_help_keyboard(topic_id: str = None, lesson_id: int = None) -> InlineK
         [InlineKeyboardButton("✍️ Задать свой вопрос", callback_data="action:ask_custom_question")],
     ]
     if topic_id and lesson_id:
-        # ИЗМЕНЕНО: Используем короткий алиас `tid`
         topic_alias = TOPIC_ALIASES.get(topic_id)
         keyboard.append([InlineKeyboardButton("◀️ К уроку", callback_data=create_callback_data("lesson", tid=topic_alias, lesson_id=lesson_id))])
     else:
@@ -129,7 +121,7 @@ def get_ai_help_keyboard(topic_id: str = None, lesson_id: int = None) -> InlineK
     return InlineKeyboardMarkup(keyboard)
 
 def get_confirmation_keyboard(action_to_confirm: str) -> InlineKeyboardMarkup:
-    """Клавиатура подтверждения действий (например, сброс)"""
+    """Клавиатура подтверждения действий"""
     keyboard = [[
         InlineKeyboardButton("✅ Да, подтверждаю", callback_data=create_callback_data(f"confirm_{action_to_confirm}")),
         InlineKeyboardButton("❌ Отмена", callback_data=create_callback_data(f"cancel_{action_to_confirm}"))
@@ -145,7 +137,9 @@ def get_lessons_keyboard(topic_id: str, user_progress: Dict[str, Any] = None) ->
 
     available_lessons = _get_available_lessons(topic_id, user_progress)
     
-    # ИЗМЕНЕНО: Используем короткий алиас `tid`
+    logger.info(f"[get_lessons_keyboard] topic_id: {topic_id}")
+    logger.info(f"[get_lessons_keyboard] available_lessons: {available_lessons}")
+    
     topic_alias = TOPIC_ALIASES.get(topic_id)
 
     for lesson in topic_data["lessons"]:
@@ -165,6 +159,8 @@ def get_lessons_keyboard(topic_id: str, user_progress: Dict[str, Any] = None) ->
         if not is_available:
             title = f"🔒 {title}"
         
+        logger.info(f"[get_lessons_keyboard] Урок {lesson_id}: доступен={is_available}, callback={callback_data}")
+        
         keyboard.append([InlineKeyboardButton(title, callback_data=callback_data)])
 
     keyboard.append([
@@ -173,53 +169,99 @@ def get_lessons_keyboard(topic_id: str, user_progress: Dict[str, Any] = None) ->
     ])
     return InlineKeyboardMarkup(keyboard)
 
-# --- Вспомогательные функции для клавиатур (без изменений) ---
+# --- Вспомогательные функции ---
 
 def _get_available_topics(user_progress: Dict[str, Any] = None) -> List[str]:
-    """Определение доступных тем на основе прогресса"""
+    """ИСПРАВЛЕНО: Более мягкая логика разблокировки тем"""
     if not user_progress:
+        logger.info("[_get_available_topics] Нет прогресса - доступна только первая тема")
         return ["основы_рисков"]
     
     available_topics = ["основы_рисков"]
     topic_order = list(LEARNING_STRUCTURE.keys())
     
     for i, topic_id in enumerate(topic_order):
-        if i == 0: continue
+        if i == 0: 
+            continue
         
         prev_topic_id = topic_order[i-1]
         prev_topic_progress = user_progress.get("topics_progress", {}).get(prev_topic_id)
+        
         if prev_topic_progress:
             total_lessons = len(LEARNING_STRUCTURE[prev_topic_id]["lessons"])
             completed_lessons = prev_topic_progress.get("completed_lessons", 0)
-            if completed_lessons >= total_lessons:
+            
+            # ИСПРАВЛЕНО: Разблокируем следующую тему после завершения 2-х уроков из 3-х
+            required_lessons = min(2, total_lessons)  # Требуем минимум 2 урока или все если их меньше 2
+            
+            if completed_lessons >= required_lessons:
                 available_topics.append(topic_id)
+                logger.info(f"[_get_available_topics] Тема {topic_id} разблокирована: завершено {completed_lessons}/{total_lessons} уроков")
             else:
+                logger.info(f"[_get_available_topics] Тема {topic_id} заблокирована: завершено только {completed_lessons}/{total_lessons} уроков")
                 break
         else:
+            logger.info(f"[_get_available_topics] Тема {topic_id} заблокирована: нет прогресса по предыдущей теме")
             break
+    
+    logger.info(f"[_get_available_topics] Доступные темы: {available_topics}")
     return available_topics
 
 def _get_available_lessons(topic_id: str, user_progress: Dict[str, Any] = None) -> List[int]:
-    """Определение доступных уроков в теме"""
-    if not user_progress: return [1]
+    """ИСПРАВЛЕНО: Правильная логика разблокировки уроков"""
+    logger.info(f"[_get_available_lessons] Начало для темы {topic_id}")
+    
+    if not user_progress: 
+        logger.info(f"[_get_available_lessons] Нет прогресса - доступен только урок 1")
+        return [1]
     
     topic_progress = user_progress.get("topics_progress", {}).get(topic_id)
-    if not topic_progress: return [1]
+    if not topic_progress: 
+        logger.info(f"[_get_available_lessons] Нет прогресса по теме - доступен только урок 1")
+        return [1]
     
     lessons_data = topic_progress.get("lessons", {})
-    available = [1]
+    logger.info(f"[_get_available_lessons] lessons_data: {lessons_data}")
+    
+    available = [1]  # Первый урок всегда доступен
     total_lessons = len(LEARNING_STRUCTURE[topic_id]["lessons"])
+    logger.info(f"[_get_available_lessons] total_lessons: {total_lessons}")
 
-    for i in range(1, total_lessons + 1):
-        lesson_data = lessons_data.get(str(i)) # Ключи в JSON могут быть строками
+    # ИСПРАВЛЕНО: Проверяем каждый урок по порядку и используем правильные ключи
+    for lesson_id in range(1, total_lessons + 1):
+        # ВАЖНО: Используем lesson_id как ключ напрямую (число), а не строку
+        lesson_data = lessons_data.get(lesson_id)  # Без str()!
+        logger.info(f"[_get_available_lessons] Проверяем урок {lesson_id}: {lesson_data}")
+        
         if lesson_data and lesson_data.get("is_completed"):
-            next_lesson = i + 1
+            next_lesson = lesson_id + 1
             if next_lesson <= total_lessons and next_lesson not in available:
                 available.append(next_lesson)
+                logger.info(f"[_get_available_lessons] ✅ Урок {next_lesson} разблокирован после завершения урока {lesson_id}")
+    
+    logger.info(f"[_get_available_lessons] ✅ Итоговый результат: {available}")
     return available
 
 def _get_lesson_status(topic_id: str, lesson_id: int, user_progress: Dict[str, Any]) -> Dict[str, Any]:
     """Получение статуса конкретного урока"""
     default_status = {"is_completed": False, "attempts": 0, "best_score": 0}
-    lesson_data = user_progress.get("topics_progress", {}).get(topic_id, {}).get("lessons", {}).get(str(lesson_id))
-    return lesson_data or default_status
+    
+    try:
+        topics_progress = user_progress.get("topics_progress", {})
+        topic_progress = topics_progress.get(topic_id, {})
+        lessons_progress = topic_progress.get("lessons", {})
+        # ВАЖНО: Используем lesson_id как число, НЕ как строку
+        lesson_data = lessons_progress.get(lesson_id)  # Без str()!
+        
+        if lesson_data:
+            return {
+                "is_completed": lesson_data.get("is_completed", False),
+                "attempts": lesson_data.get("attempts", 0),
+                "best_score": lesson_data.get("best_score", 0)
+            }
+        else:
+            return default_status
+            
+    except (KeyError, AttributeError) as e:
+        logger.warning(f"Ошибка получения статуса урока {lesson_id} темы {topic_id}: {e}")
+        return default_status

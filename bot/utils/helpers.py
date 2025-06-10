@@ -2,7 +2,6 @@
 Вспомогательные утилиты для бота
 """
 import logging
-from urllib.parse import parse_qs
 
 logger = logging.getLogger(__name__)
 
@@ -21,12 +20,13 @@ def parse_callback_data(data: str) -> dict:
         return {}
     
     try:
-        # Заменяем ';' на '&' для совместимости с parse_qs
-        normalized_data = data.replace(';', '&')
-        parsed = parse_qs(normalized_data)
+        result = {}
+        parts = data.split(';')
         
-        # Преобразуем {'key': ['value']} в {'key': 'value'}
-        result = {k: v[0] for k, v in parsed.items()}
+        for part in parts:
+            if ':' in part:
+                key, value = part.split(':', 1)  # Разделяем только по первому ':'
+                result[key] = value.strip()
         
         logger.debug(f"Parsed callback_data: {data} -> {result}")
         return result

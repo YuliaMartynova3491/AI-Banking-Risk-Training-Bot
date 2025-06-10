@@ -1,13 +1,12 @@
 """
-Главный файл AI-агента для обучения - ИСПРАВЛЕННАЯ ВЕРСИЯ
-- Исправлен путь импорта knowledge_base
+Главный файл AI-агента для обучения рисками непрерывности
 """
 import logging
 import sys
 from pathlib import Path
 
 from telegram.ext import Application
-from telegram import Update, Bot
+from telegram import Update
 from telegram.ext import ContextTypes
 
 # Добавляем корневую директорию в путь
@@ -27,7 +26,10 @@ def setup_logging():
     logging.basicConfig(
         level=getattr(logging, settings.log_level.upper(), logging.INFO),
         format=log_format,
-        handlers=[logging.FileHandler(settings.log_file, encoding='utf-8'), logging.StreamHandler(sys.stdout)]
+        handlers=[
+            logging.FileHandler(settings.log_file, encoding='utf-8'), 
+            logging.StreamHandler(sys.stdout)
+        ]
     )
     logging.getLogger("httpx").setLevel(logging.WARNING)
     return logging.getLogger(__name__)
@@ -57,7 +59,7 @@ def run_startup_checks():
         raise ConnectionError("Не удалось подключиться к базе данных.")
     logger.info(f"✅ База данных доступна. Пользователей: {db_service.get_users_count()}")
 
-    from core.knowledge_base import get_knowledge_base # <-- ИСПРАВЛЕННЫЙ ИМПОРТ
+    from core.knowledge_base import get_knowledge_base
     kb = get_knowledge_base()
     if kb.collection.count() == 0:
          logger.warning("⚠️ База знаний пуста!")
@@ -68,7 +70,7 @@ def run_startup_checks():
     if learning_agent.graph is None:
         logger.warning("⚠️ AI агент работает в ограниченном режиме (LLM недоступен).")
     else:
-        logger.info("✅ AI агент (LearningAIAgent) готов к работе.")
+        logger.info("✅ AI агент готов к работе.")
 
     logger.info("✅ Все системы проверены и готовы к работе.")
 

@@ -48,8 +48,8 @@ class Settings(BaseSettings):
     )
     knowledge_base_path: str = Field("data/knowledge_base.jsonl")
     
-    # Настройки обучения
-    min_score_to_pass: int = Field(80, env="MIN_SCORE_TO_PASS")
+    # Настройки обучения - ИСПРАВЛЕНО: порог снижен до 67% (2 из 3 правильных)
+    min_score_to_pass: int = Field(67, env="MIN_SCORE_TO_PASS")
     questions_per_lesson: int = Field(3, env="QUESTIONS_PER_LESSON")
     
     # Логирование

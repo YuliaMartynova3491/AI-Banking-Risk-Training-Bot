@@ -1,8 +1,8 @@
 # Файл: bot/handlers/menu_handler.py
 """
-Обработчик главного меню и навигации - ИСПРАВЛЕННАЯ ВЕРСИЯ 4.0
-- Используются короткие алиасы для callback_data
-- Вынесена функция parse_callback_data в утилиты
+Обработчик главного меню и навигации - ИСПРАВЛЕННАЯ ВЕРСИЯ
+- Исправлена логика обновления после сброса прогресса
+- Добавлено логирование для отладки
 """
 import logging
 from telegram import Update
@@ -10,13 +10,13 @@ from telegram.ext import ContextTypes, MessageHandler, CallbackQueryHandler, fil
 from telegram.error import BadRequest
 
 from core.database import db_service
-from config.bot_config import LEARNING_STRUCTURE, MESSAGES, ALIAS_TO_TOPIC # ИЗМЕНЕНО: Импорт ALIAS_TO_TOPIC
+from config.bot_config import LEARNING_STRUCTURE, MESSAGES, ALIAS_TO_TOPIC
 from bot.keyboards.menu_keyboards import (
     get_main_menu_keyboard, get_topics_keyboard, get_lessons_keyboard,
     get_progress_keyboard, get_confirmation_keyboard
 )
 from ai_agent.agent_graph import learning_agent
-from bot.utils.helpers import parse_callback_data # ИЗМЕНЕНО: Импорт из утилит
+from bot.utils.helpers import parse_callback_data
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +40,9 @@ async def show_learning_topics(chat_id: int, context: ContextTypes.DEFAULT_TYPE,
     progress_summary = db_service.get_user_progress_summary(user_id)
     text = "📚 Выберите тему для изучения:"
     reply_markup = get_topics_keyboard(progress_summary.dict())
+    
+    logger.info(f"[show_learning_topics] Показываем темы для пользователя {user_id}")
+    
     try:
         if message_id:
             await context.bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=text, reply_markup=reply_markup)
@@ -84,7 +87,6 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
     action = data.get("action")
     user_id = str(query.from_user.id)
     
-    # ИЗМЕНЕНО: Получаем полный topic_id из короткого алиаса `tid`
     topic_id = ALIAS_TO_TOPIC.get(data.get("tid"))
 
     try:
@@ -116,27 +118,29 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
 # --- Вспомогательные функции ---
 
 async def handle_topic_selection(query, context, topic_id: str):
-    """Обработка выбора темы -> показывает уроки."""
+    """Обработка выбора темы -> показывает уроки - ИСПРАВЛЕННАЯ ВЕРСИЯ"""
     try:
-        logger.info(f"[handle_topic_selection] Шаг 1: Начало. topic_id: {topic_id}")
+        logger.info(f"[handle_topic_selection] Начало для topic_id: {topic_id}")
 
         if not topic_id or topic_id not in LEARNING_STRUCTURE:
-            logger.warning(f"[handle_topic_selection] Шаг 1.1: Ошибка! Неверный topic_id '{topic_id}'. Выход.")
+            logger.warning(f"[handle_topic_selection] Неверный topic_id '{topic_id}'")
             return
 
+        # ИСПРАВЛЕНИЕ: Получаем СВЕЖИЕ данные после возможного сброса
         progress_summary = db_service.get_user_progress_summary(str(query.from_user.id))
-        logger.info(f"[handle_topic_selection] Шаг 2: Прогресс пользователя получен.")
+        logger.info(f"[handle_topic_selection] Получен прогресс: {progress_summary.dict()}")
 
         topic_data = LEARNING_STRUCTURE[topic_id]
         text = f"*{topic_data['title']}*\n_{topic_data['description']}_\n\nВыберите урок:"
+        
+        # ИСПРАВЛЕНИЕ: Передаем актуальные данные в get_lessons_keyboard
         reply_markup = get_lessons_keyboard(topic_id, progress_summary.dict())
-        logger.info(f"[handle_topic_selection] Шаг 3: Текст и клавиатура для урока сформированы.")
+        logger.info(f"[handle_topic_selection] Клавиатура сформирована")
 
         await query.edit_message_text(text, reply_markup=reply_markup, parse_mode='Markdown')
-        logger.info(f"[handle_topic_selection] Шаг 4: Сообщение успешно отредактировано!")
+        logger.info(f"[handle_topic_selection] Сообщение успешно отредактировано!")
 
     except Exception as e:
-        # Этот блок поймает любую ошибку внутри функции
         logger.error(f"[handle_topic_selection] КРИТИЧЕСКАЯ ОШИБКА: {e}", exc_info=True)
 
 async def show_ai_recommendations(query, context: ContextTypes.DEFAULT_TYPE):
@@ -152,9 +156,23 @@ async def show_ai_recommendations(query, context: ContextTypes.DEFAULT_TYPE):
     await query.edit_message_text(text, reply_markup=get_progress_keyboard(), parse_mode='Markdown')
 
 async def confirm_reset_progress(query, context: ContextTypes.DEFAULT_TYPE):
-    """Подтверждение сброса прогресса."""
-    db_service.reset_user_progress(str(query.from_user.id))
-    await query.edit_message_text(text="✅ Ваш прогресс сброшен. Можете начать обучение заново.")
+    """Подтверждение сброса прогресса - ИСПРАВЛЕННАЯ ВЕРСИЯ"""
+    user_id = str(query.from_user.id)
+    
+    # Сбрасываем прогресс
+    success = db_service.reset_user_progress(user_id)
+    
+    if success:
+        logger.info(f"[confirm_reset_progress] Прогресс пользователя {user_id} успешно сброшен")
+        
+        # ИСПРАВЛЕНИЕ: Показываем обновленное меню тем с новыми данными
+        await query.edit_message_text(text="✅ Ваш прогресс сброшен. Возвращаемся к выбору тем...")
+        
+        # Показываем свежие темы
+        await show_learning_topics(int(user_id), context, query.message.message_id)
+    else:
+        logger.error(f"[confirm_reset_progress] Ошибка сброса прогресса для {user_id}")
+        await query.edit_message_text(text="❌ Произошла ошибка при сбросе прогресса.")
 
 
 # --- Регистрация обработчиков ---
