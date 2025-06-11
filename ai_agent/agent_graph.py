@@ -1,152 +1,228 @@
 """
-AI-агент на LangGraph для персонализированного обучения (ИСПРАВЛЕННАЯ ВЕРСИЯ)
-- Убрана дублирующаяся логика анализа (теперь в user_analysis_service)
-- Упрощено создание state для запуска графа
-- Убраны неиспользуемые методы
+AI-агент на LangGraph для персонализированного обучения
 """
 import logging
-from typing import Dict, Any, List, Optional, Annotated
-
+import traceback
+from typing import Dict, Any, List, Optional, TypedDict
 from langgraph.graph import StateGraph, END
-from langchain_core.messages import BaseMessage, AIMessage
-from langchain_openai import ChatOpenAI
-from typing_extensions import TypedDict
-
-from config.settings import settings
-from services.adaptive_content_service import adaptive_content_service
 from ai_agent.agent_nodes import AgentNodes
 
 logger = logging.getLogger(__name__)
 
-
+# ИСПРАВЛЕНО: Правильная схема состояния для LangGraph
 class AgentState(TypedDict):
-    """Состояние агента с правильной типизацией."""
+    """Состояние агента для LangGraph"""
+    # Входные данные
     user_id: str
-    messages: Annotated[List[BaseMessage], "Сообщения в истории"]
-    intent: Optional[str]
     user_question: Optional[str]
+    action_type: Optional[str]  # "assistance" или "generate_questions"
     topic: Optional[str]
     lesson_id: Optional[int]
-    # Результаты работы узлов
+    
+    # Промежуточные данные
     user_analysis: Optional[Dict[str, Any]]
+    
+    # Выходные данные
     assistance_response: Optional[str]
-    adapted_difficulty: Optional[str]
-    adaptation_message: Optional[str]
-    error: Optional[str]
-
+    questions: Optional[List[Dict[str, Any]]]
+    
+    # Метаданные для отладки
+    processing_steps: List[str]
+    errors: List[str]
+    execution_time: float
 
 class LearningAIAgent:
-    """AI-агент для персонализированного обучения."""
-
+    """AI-агент для персонализированного обучения - УПРОЩЕННАЯ ВЕРСИЯ"""
+    
     def __init__(self):
-        self.llm = None
         self.graph = None
-        self._initialize()
-
-    def _initialize(self):
-        """Инициализация агента."""
+        self.app = None
+        self._build_graph()
+    
+    def _build_graph(self):
+        """Построение графа агента с отладкой"""
         try:
-            self.llm = ChatOpenAI(
-                api_key=settings.openai_api_key,
-                base_url=settings.openai_api_base,
-                model=settings.openai_model,
-                temperature=0.7
+            logger.info("🏗️ [AgentGraph] Начало построения графа агента...")
+            
+            # ИСПРАВЛЕНО: Используем TypedDict вместо dict
+            workflow = StateGraph(AgentState)
+            
+            # Добавляем узлы агента
+            workflow.add_node("analyze_user", AgentNodes.analyze_user_node)
+            workflow.add_node("provide_assistance", AgentNodes.provide_assistance_node)
+            
+            # Определяем маршруты с логированием
+            workflow.set_entry_point("analyze_user")
+            
+            # Условная логика маршрутизации
+            workflow.add_conditional_edges(
+                "analyze_user",
+                self._route_after_analysis,
+                {
+                    "assistance": "provide_assistance",
+                    "end": END
+                }
             )
-            AgentNodes.llm = self.llm # Передаем LLM в класс с узлами
-            self.graph = self._create_agent_graph()
-            logger.info("AI-агент успешно инициализирован.")
+            
+            workflow.add_edge("provide_assistance", END)
+            
+            # Компилируем граф
+            self.app = workflow.compile()
+            self.graph = workflow
+            
+            logger.info("✅ [AgentGraph] Граф агента успешно построен")
+            
         except Exception as e:
-            logger.error(f"Ошибка инициализации AI-агента: {e}")
-            self.graph = None # Не создаем граф, если нет LLM
-
-    def _create_agent_graph(self) -> StateGraph:
-        """Создание графа AI-агента."""
-        workflow = StateGraph(AgentState)
-        workflow.add_node("analyze_user", AgentNodes.analyze_user_node)
-        workflow.add_node("provide_assistance", AgentNodes.provide_assistance_node)
-        workflow.add_node("adapt_path", AgentNodes.adapt_path_node)
-        
-        workflow.set_entry_point("analyze_user")
-        
-        workflow.add_conditional_edges(
-            "analyze_user",
-            self._route_after_analysis,
-            {
-                "assist": "provide_assistance",
-                "adapt": "adapt_path",
-                "end": END
-            }
-        )
-        workflow.add_edge("provide_assistance", END)
-        workflow.add_edge("adapt_path", END)
-        
-        return workflow.compile()
-
+            logger.error(f"❌ [AgentGraph] Ошибка построения графа: {e}")
+            logger.error(f"Трейс: {traceback.format_exc()}")
+            # НЕ поднимаем исключение, чтобы бот мог работать без агента
+            self.graph = None
+            self.app = None
+    
     def _route_after_analysis(self, state: AgentState) -> str:
-        """Определяет следующий узел после анализа пользователя."""
-        intent = state.get("intent", "assist")
-        if intent == "assistance":
-            return "assist"
-        elif intent == "adapt_path":
-            return "adapt"
-        return "end"
-
-    def _invoke_graph(self, initial_data: dict) -> dict:
-        """Упрощенный запуск графа с начальными данными."""
-        if not self.graph:
-            return {"error": "AI-агент не инициализирован."}
-
-        # Создаем состояние с полями по умолчанию
-        state: AgentState = {
-            "messages": [],
-            "user_analysis": None,
-            "assistance_response": None,
-            "adapted_difficulty": None,
-            "adaptation_message": None,
-            "error": None,
-            **initial_data # Перезаписываем поля из initial_data
-        }
+        """Маршрутизация после анализа пользователя"""
+        action_type = state.get("action_type", "assistance")
+        
+        logger.info(f"🔀 [AgentGraph] Маршрутизация: action_type={action_type}")
+        
+        # Добавляем шаг в лог
+        steps = state.get("processing_steps", [])
+        steps.append(f"Анализ завершен, выбрано действие: {action_type}")
+        state["processing_steps"] = steps
+        
+        if action_type == "assistance":
+            return "assistance"
+        else:
+            logger.warning(f"⚠️ [AgentGraph] Неизвестный тип действия: {action_type}")
+            return "end"
+    
+    def provide_learning_assistance(self, user_id: str, user_question: str, 
+                                   topic: str = None, lesson_id: int = None) -> str:
+        """УПРОЩЕННЫЙ МЕТОД: Обработка запроса помощи через агента"""
+        logger.info(f"🎯 [AgentGraph] Запрос помощи от {user_id}: {user_question}")
         
         try:
-            return self.graph.invoke(state)
+            # Проверяем готовность агента
+            if not self.app:
+                logger.warning("⚠️ [AgentGraph] Граф агента недоступен, используем fallback")
+                return self._get_fallback_response(user_question)
+            
+            # Подготавливаем входное состояние
+            initial_state: AgentState = {
+                "user_id": user_id,
+                "user_question": user_question,
+                "action_type": "assistance",
+                "topic": topic,
+                "lesson_id": lesson_id,
+                "user_analysis": None,
+                "assistance_response": None,
+                "questions": None,
+                "processing_steps": ["Запрос получен"],
+                "errors": [],
+                "execution_time": 0.0
+            }
+            
+            # Выполняем граф агента
+            final_state = self.app.invoke(initial_state)
+            
+            # Анализируем результат
+            response = final_state.get("assistance_response")
+            errors = final_state.get("errors", [])
+            
+            if response and len(response) > 10:
+                logger.info(f"✅ [AgentGraph] Получен ответ агента: {response[:100]}...")
+                return response
+            else:
+                logger.warning(f"⚠️ [AgentGraph] Агент не сгенерировал хороший ответ. Ошибки: {errors}")
+                return self._get_fallback_response(user_question)
+                
         except Exception as e:
-            logger.error(f"Ошибка выполнения графа: {e}", exc_info=True)
-            return {"error": str(e)}
-
-    # --- Публичные методы для взаимодействия ---
-
-    def provide_learning_assistance(self, user_id: str, question: str, topic: str = None, lesson_id: int = None) -> str:
-        """Предоставление помощи и объяснений."""
-        result = self._invoke_graph({
-            "user_id": user_id,
-            "user_question": question,
-            "topic": topic,
-            "lesson_id": lesson_id,
-            "intent": "assistance"
-        })
-        return result.get("assistance_response", "Извините, произошла ошибка при обработке вашего вопроса.")
-
+            logger.error(f"❌ [AgentGraph] Ошибка выполнения агента: {e}")
+            logger.error(f"Трейс: {traceback.format_exc()}")
+            return self._get_fallback_response(user_question)
+    
+    def _get_fallback_response(self, user_question: str) -> str:
+        """Запасной ответ когда агент недоступен"""
+        question_lower = user_question.lower()
+        
+        # Простые ответы на основе ключевых слов
+        if any(word in question_lower for word in ["риск", "risk"]):
+            return "Риск нарушения непрерывности - это вероятность событий, которые могут прервать критически важные процессы банка. Изучите материалы урока для более подробной информации."
+        
+        elif any(word in question_lower for word in ["rto", "время восстановления"]):
+            return "RTO (Recovery Time Objective) - это целевое время восстановления процесса после инцидента. Обычно измеряется в часах или днях."
+        
+        elif any(word in question_lower for word in ["mtpd", "период прерывания"]):
+            return "MTPD (Maximum Tolerable Period of Disruption) - максимально допустимый период прерывания, после которого ущерб становится критическим."
+        
+        elif any(word in question_lower for word in ["угроза", "угрозы"]):
+            return "Основные типы угроз: техногенные, природные, социальные, геополитические, экономические и биолого-социальные. Каждый тип требует своего подхода к оценке."
+        
+        elif any(word in question_lower for word in ["уор", "управление"]):
+            return "УОР (Управление операционных рисков) - подразделение, которое инициирует и координирует оценку рисков нарушения непрерывности в банке."
+        
+        else:
+            return "Изучите материалы урока для получения подробной информации по вашему вопросу. Если нужна дополнительная помощь, обратитесь к инструкции."
+    
     def adapt_learning_path(self, user_id: str) -> Dict[str, Any]:
-        """Адаптация пути обучения на основе прогресса."""
-        result = self._invoke_graph({
-            "user_id": user_id,
-            "intent": "adapt_path"
-        })
-        return {
-            "difficulty": result.get("adapted_difficulty", "intermediate"),
-            "message": result.get("adaptation_message", ""),
-            "recommendations": result.get("user_analysis", {}).get("recommendations", [])
-        }
+        """УПРОЩЕННАЯ ВЕРСИЯ: Адаптация пути обучения"""
+        logger.info(f"🎯 [AgentGraph] Адаптация пути обучения для {user_id}")
+        
+        try:
+            from core.database import db_service
+            progress = db_service.get_user_progress_summary(user_id)
+            
+            total_completed = progress.total_lessons_completed
+            avg_score = progress.total_score
+            
+            # Простая логика адаптации
+            if total_completed == 0:
+                message = "🎯 Начните с изучения основ рисков нарушения непрерывности. Это фундамент для понимания всей методики."
+                difficulty = "beginner"
+            elif avg_score >= 90:
+                message = "🌟 Отличные результаты! Вы демонстрируете глубокое понимание материала. Продолжайте в том же духе!"
+                difficulty = "advanced"
+            elif avg_score >= 80:
+                message = "✅ Хорошая работа! Вы успешно осваиваете материал. Рекомендуем закрепить знания на практических примерах."
+                difficulty = "intermediate"
+            elif avg_score >= 60:
+                message = "📚 Рекомендуем уделить больше внимания изучению материалов перед тестированием. Используйте помощь AI-агента."
+                difficulty = "beginner"
+            else:
+                message = "💪 Не сдавайтесь! Повторите пройденные уроки и обязательно изучите материалы. Обращайтесь за помощью к AI."
+                difficulty = "beginner"
+            
+            return {
+                "difficulty": difficulty,
+                "message": message,
+                "recommendations": [
+                    "Изучайте материалы внимательно",
+                    "Используйте помощь AI-агента при затруднениях",
+                    "Повторяйте сложные темы"
+                ]
+            }
+            
+        except Exception as e:
+            logger.error(f"❌ [AgentGraph] Ошибка адаптации пути: {e}")
+            return {
+                "difficulty": "intermediate",
+                "message": "Продолжайте изучение в текущем темпе!",
+                "recommendations": ["Используйте все доступные материалы"]
+            }
     
     def get_personalized_encouragement(self, user_id: str, score: float, is_improvement: bool = False) -> str:
-        """Получение персонализированного поощрения (упрощено)."""
+        """Получение персонализированного поощрения"""
         if score >= 90:
             return "🌟 Превосходно! Вы демонстрируете отличное понимание материала!"
         elif score >= 80:
             return "🎉 Отличный результат! Вы хорошо усвоили материал!"
+        elif score >= 70:
+            return "👏 Хорошо! Продолжайте изучение, вы на правильном пути!"
         elif is_improvement:
             return "📈 Заметен прогресс! Продолжайте в том же духе!"
         else:
             return "💪 Неплохо! Еще немного усилий и результат будет отличным!"
 
+
+# Глобальный экземпляр агента
 learning_agent = LearningAIAgent()

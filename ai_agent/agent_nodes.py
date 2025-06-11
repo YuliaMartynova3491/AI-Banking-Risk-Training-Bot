@@ -1,167 +1,244 @@
 """
-Узлы (nodes) для AI-агента на LangGraph - ВЕРСИЯ ДЛЯ РУССКОГО ЯЗЫКА
+Узлы (nodes) для AI-агента на LangGraph
 """
 import logging
-from typing import Dict, Any
-from langchain_core.messages import AIMessage, SystemMessage
-
-from services.user_analysis_service import user_analysis_service
-from services.adaptive_content_service import adaptive_content_service
+import traceback
+from typing import Dict, Any, Optional
+from langchain_core.messages import HumanMessage, SystemMessage
 
 logger = logging.getLogger(__name__)
 
-# Системный промпт для принуждения к русскому языку
-RUSSIAN_SYSTEM_PROMPT = """
-Ты - эксперт по банковским рискам в России. 
-
-КРИТИЧЕСКИ ВАЖНО:
-- Отвечай ТОЛЬКО на русском языке
-- НЕ показывай процесс размышления
-- НЕ используй китайские иероглифы или другие языки
-- Давай прямые, понятные ответы
-- Используй примеры только из российских банков: Сбербанк, ВТБ, Альфа-Банк
-- Объясняй сложные термины простыми словами
-
-Стиль: краткий, профессиональный, мотивирующий.
-"""
-
 class AgentNodes:
-    """Класс, содержащий все узлы AI-агента."""
     llm = None
-
-    @staticmethod
-    def analyze_user_node(state: Dict[str, Any]) -> Dict[str, Any]:
-        """Узел анализа пользователя."""
-        user_id = state.get("user_id")
-        if not user_id:
-            return {**state, "error": "User ID not provided"}
-        
-        try:
-            logger.info(f"Анализирую пользователя {user_id}...")
-            user_analysis = user_analysis_service.get_full_user_analysis(user_id)
-
-            return {
-                **state,
-                "user_analysis": user_analysis,
-                "messages": state.get("messages", []) + [AIMessage(content="Анализ профиля завершен.")]
-            }
-        except Exception as e:
-            logger.error(f"Ошибка анализа пользователя {user_id}: {e}", exc_info=True)
-            return {**state, "error": f"Analysis failed: {e}"}
-
+    knowledge_base = None
+    
+    @classmethod
+    def initialize_llm(cls):
+        """Инициализация LLM с детальным логированием"""
+        if cls.llm is None:
+            try:
+                from config.settings import settings
+                from langchain_openai import ChatOpenAI
+                
+                logger.info("🤖 Инициализация LLM агента...")
+                
+                # Проверяем наличие API ключа
+                if not settings.openai_api_key:
+                    logger.error("❌ OPENAI_API_KEY не найден в настройках!")
+                    return False
+                
+                # Создаем LLM с timeout и retry
+                cls.llm = ChatOpenAI(
+                    model=settings.openai_model,
+                    api_key=settings.openai_api_key,
+                    temperature=0.3,
+                    max_tokens=1000,
+                    timeout=30,  # 30 секунд timeout
+                    max_retries=3  # 3 попытки
+                )
+                
+                # Тестируем LLM
+                test_response = cls.llm.invoke([HumanMessage(content="Тест")])
+                logger.info(f"✅ LLM агент инициализирован успешно: {test_response.content[:50]}...")
+                return True
+                
+            except Exception as e:
+                logger.error(f"❌ Ошибка инициализации LLM агента: {e}")
+                logger.error(f"Трейс: {traceback.format_exc()}")
+                cls.llm = None
+                return False
+    
     @staticmethod
     def provide_assistance_node(state: Dict[str, Any]) -> Dict[str, Any]:
-        """Узел предоставления персонализированной помощи - ИСПРАВЛЕНО ДЛЯ РУССКОГО"""
-        if not AgentNodes.llm:
-            return {**state, "assistance_response": "AI-помощник временно недоступен."}
-            
+        """ИСПРАВЛЕНО: Детальная отладка помощника агента"""
+        logger.info("🎯 [AgentNodes] Узел помощника начал работу")
+        logger.info(f"🔍 [AgentNodes] Входящее состояние: {list(state.keys())}")
+        
+        user_question = state.get("user_question", "")
+        if not user_question:
+            logger.warning("⚠️ [AgentNodes] Пустой вопрос пользователя")
+            return {**state, "assistance_response": "Задайте конкретный вопрос для получения помощи."}
+        
+        logger.info(f"❓ [AgentNodes] Вопрос пользователя: '{user_question}'")
+        
         try:
-            user_question = state.get("user_question", "")
+            # Инициализируем LLM если нужно
+            if not AgentNodes.llm:
+                logger.info("🔄 [AgentNodes] Инициализация LLM...")
+                if not AgentNodes.initialize_llm():
+                    logger.error("❌ [AgentNodes] LLM недоступен")
+                    return {**state, "assistance_response": "Сервис временно недоступен. Попробуйте позже."}
+            
+            # Получаем анализ пользователя и контекст
             user_analysis = state.get("user_analysis", {})
-            user_profile = user_analysis.get("user_profile", {})
             topic = state.get("topic")
-
+            lesson_id = state.get("lesson_id")
+            
+            logger.info(f"👤 [AgentNodes] Анализ пользователя: {user_analysis}")
+            logger.info(f"📚 [AgentNodes] Контекст: тема={topic}, урок={lesson_id}")
+            
             # Поиск релевантного контента
-            relevant_content = adaptive_content_service.search_relevant_content(
-                query=user_question, topic_filter=topic, n_results=3
-            )
-            context_text = "\n\n".join([item['document'] for item in relevant_content])
-
-            # ИСПРАВЛЕННЫЙ ПРОМПТ для принуждения к русскому языку
-            prompt_text = f"""{RUSSIAN_SYSTEM_PROMPT}
-
-Пользователь задал вопрос: "{user_question}"
-
-Уровень опыта: {user_profile.get("experience_level", "начинающий")}
-
-Релевантная информация из базы знаний:
-{context_text}
-
-Дай краткий и понятный ответ (не более 400 слов) ТОЛЬКО на русском языке:
-1. Прямо ответь на вопрос
-2. Используй простые слова
-3. Приведи пример из российского банка
-4. Добавь мотивацию к дальнейшему изучению
-
-ВАЖНО: Не показывай размышления, отвечай сразу по существу."""
-
-            # Создаем сообщения с системным промптом
+            relevant_content = AgentNodes._search_knowledge_base(user_question, topic)
+            
+            if not relevant_content:
+                logger.warning("⚠️ [AgentNodes] Релевантный контент не найден")
+                return {**state, "assistance_response": "Не удалось найти релевантную информацию. Обратитесь к материалам урока."}
+            
+            logger.info(f"📖 [AgentNodes] Найдено {len(relevant_content)} релевантных документов")
+            
+            # Формируем расширенный промпт для агента
+            system_prompt = AgentNodes._build_agent_system_prompt(user_analysis, topic, lesson_id)
+            context_prompt = AgentNodes._build_context_prompt(relevant_content, user_question)
+            
+            logger.info("🧠 [AgentNodes] Отправляем запрос к LLM агенту...")
+            
+            # Вызываем LLM агент
             messages = [
-                SystemMessage(content=RUSSIAN_SYSTEM_PROMPT),
-                AIMessage(content=prompt_text)
+                SystemMessage(content=system_prompt),
+                HumanMessage(content=context_prompt)
             ]
             
             response = AgentNodes.llm.invoke(messages)
             
-            # Очищаем ответ от возможных технических вставок
-            clean_response = AgentNodes._clean_response(response.content)
+            if not response or not response.content:
+                logger.error("❌ [AgentNodes] Пустой ответ от LLM")
+                return {**state, "assistance_response": "Не удалось получить ответ. Попробуйте переформулировать вопрос."}
+            
+            clean_response = AgentNodes._clean_agent_response(response.content)
+            logger.info(f"✅ [AgentNodes] Получен ответ агента: {clean_response[:100]}...")
             
             return {**state, "assistance_response": clean_response}
             
         except Exception as e:
-            logger.error(f"Ошибка предоставления помощи: {e}", exc_info=True)
-            return {**state, "assistance_response": "Извините, не удалось обработать ваш запрос. Попробуйте переформулировать вопрос."}
-
+            logger.error(f"❌ [AgentNodes] Критическая ошибка в узле помощника: {e}")
+            logger.error(f"Трейс: {traceback.format_exc()}")
+            return {**state, "assistance_response": "Произошла ошибка при обработке запроса. Попробуйте еще раз."}
+    
     @staticmethod
-    def adapt_path_node(state: Dict[str, Any]) -> Dict[str, Any]:
-        """Узел адаптации пути обучения - ИСПРАВЛЕНО"""
-        if not AgentNodes.llm:
-            return {**state, "adaptation_message": "Рекомендации временно недоступны."}
-        
+    def _search_knowledge_base(query: str, topic_filter: str = None) -> list:
+        """Поиск в базе знаний с отладкой"""
         try:
-            user_analysis = state.get("user_analysis", {})
-            user_progress = user_analysis.get("user_progress", {})
+            logger.info(f"🔍 [Knowledge] Поиск в базе знаний: '{query}', фильтр={topic_filter}")
             
-            # Простой анализ без LLM для надежности
-            total_completed = user_progress.get("total_lessons_completed", 0)
-            total_score = user_progress.get("total_score", 0)
+            from services.adaptive_content_service import adaptive_content_service
             
-            if total_completed == 0:
-                message = "🎯 Начните с изучения основ рисков нарушения непрерывности. Это фундамент для понимания всей методики."
-            elif total_score >= 90:
-                message = "🌟 Отличные результаты! Вы демонстрируете глубокое понимание материала. Продолжайте в том же духе!"
-            elif total_score >= 80:
-                message = "✅ Хорошая работа! Вы успешно осваиваете материал. Рекомендуем закрепить знания на практических примерах."
-            elif total_score >= 60:
-                message = "📚 Рекомендуем уделить больше внимания изучению материалов перед тестированием. Используйте помощь AI-агента."
-            else:
-                message = "💪 Не сдавайтесь! Повторите пройденные уроки и обязательно изучите материалы. Обращайтесь за помощью к AI."
-
-            return {
-                **state,
-                "adaptation_message": message,
-                "adapted_difficulty": user_analysis.get("content_settings", {}).get("difficulty", "intermediate")
-            }
+            results = adaptive_content_service.search_relevant_content(
+                query=query,
+                topic_filter=topic_filter,
+                n_results=3  # Больше контекста для агента
+            )
+            
+            logger.info(f"📚 [Knowledge] Найдено {len(results)} результатов")
+            return results
             
         except Exception as e:
-            logger.error(f"Ошибка адаптации пути: {e}", exc_info=True)
-            return {**state, "adaptation_message": "Продолжайте изучение в текущем темпе!"}
-
+            logger.error(f"❌ [Knowledge] Ошибка поиска: {e}")
+            return []
+    
     @staticmethod
-    def _clean_response(response: str) -> str:
-        """Очистка ответа от технических вставок и китайских символов"""
-        import re
+    def _build_agent_system_prompt(user_analysis: dict, topic: str, lesson_id: int) -> str:
+        """УЛУЧШЕННЫЙ системный промпт для агента"""
         
-        # Удаляем китайские символы
-        response = re.sub(r'[\u4e00-\u9fff]+', '', response)
+        # Анализ уровня пользователя
+        user_level = user_analysis.get('knowledge_level', 'beginner')
+        weak_areas = user_analysis.get('weak_knowledge_areas', [])
+        learning_style = user_analysis.get('learning_style', 'visual')
         
-        # Удаляем технические фразы на английском
-        technical_phrases = [
-            "Let me think about this",
-            "I need to",
-            "Based on the context",
-            "Here's what",
-            "Let me explain"
-        ]
+        prompt = f"""Ты - экспертный AI-агент по банковским рискам и обеспечению непрерывности деятельности.
+
+КОНТЕКСТ ОБУЧЕНИЯ:
+- Текущая тема: {topic}
+- Урок: {lesson_id}
+- Уровень пользователя: {user_level}
+- Слабые области: {', '.join(weak_areas) if weak_areas else 'не выявлены'}
+- Стиль обучения: {learning_style}
+
+ТВОЯ РОЛЬ:
+1. Анализируй вопрос в контексте банковских рисков
+2. Давай экспертные ответы с примерами из банковской практики
+3. Адаптируй сложность под уровень пользователя
+4. Учитывай слабые области при объяснении
+5. Используй терминологию из области управления рисками
+
+ПРИНЦИПЫ ОТВЕТОВ:
+- Точность и профессионализм
+- Практические примеры из банковской сферы
+- Связь с нормативными требованиями (если применимо)
+- Структурированность (используй нумерацию, разделение на пункты)
+- Мотивация к дальнейшему изучению
+
+Отвечай ТОЛЬКО на русском языке. Максимум 500 слов."""
+
+        return prompt
+    
+    @staticmethod
+    def _build_context_prompt(relevant_content: list, user_question: str) -> str:
+        """Построение контекстного промпта с релевантной информацией"""
         
-        for phrase in technical_phrases:
-            response = response.replace(phrase, "")
+        context_parts = []
+        for i, content in enumerate(relevant_content[:3], 1):
+            doc_text = content.get('document', '')[:500]  # Ограничиваем размер
+            context_parts.append(f"Источник {i}:\n{doc_text}")
         
-        # Удаляем лишние пробелы и переносы
-        response = re.sub(r'\s+', ' ', response).strip()
+        context_text = "\n\n".join(context_parts)
+        
+        prompt = f"""РЕЛЕВАНТНАЯ ИНФОРМАЦИЯ ИЗ БАЗЫ ЗНАНИЙ:
+{context_text}
+
+ВОПРОС ПОЛЬЗОВАТЕЛЯ: {user_question}
+
+Проанализируй вопрос и дай экспертный ответ, используя информацию из базы знаний. Если информации недостаточно, дополни своими знаниями о банковских рисках."""
+
+        return prompt
+    
+    @staticmethod
+    def _clean_agent_response(response: str) -> str:
+        """Очистка ответа агента"""
+        if not response:
+            return "Не удалось сформировать ответ."
+        
+        # Убираем лишние переносы и пробелы
+        cleaned = response.strip()
         
         # Ограничиваем длину
-        if len(response) > 500:
-            response = response[:500] + "..."
+        if len(cleaned) > 1000:
+            cleaned = cleaned[:1000] + "..."
         
-        return response
+        return cleaned
+
+    @staticmethod
+    def generate_questions_node(state: Dict[str, Any]) -> Dict[str, Any]:
+        """ИСПРАВЛЕНО: Детальная отладка генерации вопросов агентом"""
+        logger.info("📝 [AgentNodes] Узел генерации вопросов начал работу")
+        
+        try:
+            user_id = state.get("user_id")
+            topic = state.get("topic")
+            lesson_id = state.get("lesson_id")
+            
+            if not all([user_id, topic, lesson_id]):
+                logger.error(f"❌ [AgentNodes] Недостаточно данных: user_id={user_id}, topic={topic}, lesson_id={lesson_id}")
+                return {**state, "questions": []}
+            
+            logger.info(f"📚 [AgentNodes] Генерация вопросов для: пользователь={user_id}, тема={topic}, урок={lesson_id}")
+            
+            from services.adaptive_content_service import adaptive_content_service
+            
+            # Генерируем адаптивные вопросы через сервис
+            questions = adaptive_content_service.generate_adaptive_questions(
+                user_id=user_id,
+                topic=topic,
+                lesson_id=lesson_id
+            )
+            
+            if not questions:
+                logger.warning("⚠️ [AgentNodes] Не удалось сгенерировать вопросы")
+                return {**state, "questions": []}
+            
+            logger.info(f"✅ [AgentNodes] Сгенерировано {len(questions)} вопросов")
+            return {**state, "questions": questions}
+            
+        except Exception as e:
+            logger.error(f"❌ [AgentNodes] Ошибка генерации вопросов: {e}")
+            logger.error(f"Трейс: {traceback.format_exc()}")
+            return {**state, "questions": []}

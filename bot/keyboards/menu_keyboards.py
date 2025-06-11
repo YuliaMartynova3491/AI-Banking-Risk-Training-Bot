@@ -1,5 +1,9 @@
 """
-Клавиатуры для меню
+Клавиатуры для меню 
+Основные исправления:
+1. Правильная логика разблокировки первого урока каждой темы
+2. Улучшенное логирование для отладки
+3. Более гибкая логика доступности тем
 """
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, ReplyKeyboardMarkup
 from typing import List, Dict, Any
@@ -32,7 +36,7 @@ def get_main_menu_keyboard() -> ReplyKeyboardMarkup:
     )
 
 def get_topics_keyboard(user_progress: Dict[str, Any] = None) -> InlineKeyboardMarkup:
-    """Клавиатура выбора тем обучения"""
+    """Клавиатура выбора тем обучения - ИСПРАВЛЕНО"""
     keyboard = []
     available_topics = _get_available_topics(user_progress)
     
@@ -129,7 +133,7 @@ def get_confirmation_keyboard(action_to_confirm: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(keyboard)
 
 def get_lessons_keyboard(topic_id: str, user_progress: Dict[str, Any] = None) -> InlineKeyboardMarkup:
-    """Клавиатура выбора уроков в теме"""
+    """Клавиатура выбора уроков в теме - ИСПРАВЛЕНО"""
     keyboard = []
     topic_data = LEARNING_STRUCTURE.get(topic_id)
     if not topic_data:
@@ -172,74 +176,43 @@ def get_lessons_keyboard(topic_id: str, user_progress: Dict[str, Any] = None) ->
 # --- Вспомогательные функции ---
 
 def _get_available_topics(user_progress: Dict[str, Any] = None) -> List[str]:
-    """ИСПРАВЛЕНО: Более мягкая логика разблокировки тем"""
-    if not user_progress:
-        logger.info("[_get_available_topics] Нет прогресса - доступна только первая тема")
-        return ["основы_рисков"]
+    """ИСПРАВЛЕНО: Все темы доступны сразу, блокируются только уроки внутри них"""
+    # ГЛАВНОЕ ИЗМЕНЕНИЕ: возвращаем ВСЕ темы вместо только первой
+    available_topics = list(LEARNING_STRUCTURE.keys())
     
-    available_topics = ["основы_рисков"]
-    topic_order = list(LEARNING_STRUCTURE.keys())
-    
-    for i, topic_id in enumerate(topic_order):
-        if i == 0: 
-            continue
-        
-        prev_topic_id = topic_order[i-1]
-        prev_topic_progress = user_progress.get("topics_progress", {}).get(prev_topic_id)
-        
-        if prev_topic_progress:
-            total_lessons = len(LEARNING_STRUCTURE[prev_topic_id]["lessons"])
-            completed_lessons = prev_topic_progress.get("completed_lessons", 0)
-            
-            # ИСПРАВЛЕНО: Разблокируем следующую тему после завершения 2-х уроков из 3-х
-            required_lessons = min(2, total_lessons)  # Требуем минимум 2 урока или все если их меньше 2
-            
-            if completed_lessons >= required_lessons:
-                available_topics.append(topic_id)
-                logger.info(f"[_get_available_topics] Тема {topic_id} разблокирована: завершено {completed_lessons}/{total_lessons} уроков")
-            else:
-                logger.info(f"[_get_available_topics] Тема {topic_id} заблокирована: завершено только {completed_lessons}/{total_lessons} уроков")
-                break
-        else:
-            logger.info(f"[_get_available_topics] Тема {topic_id} заблокирована: нет прогресса по предыдущей теме")
-            break
-    
-    logger.info(f"[_get_available_topics] Доступные темы: {available_topics}")
+    logger.info(f"[_get_available_topics] Все темы доступны: {available_topics}")
     return available_topics
 
 def _get_available_lessons(topic_id: str, user_progress: Dict[str, Any] = None) -> List[int]:
-    """ИСПРАВЛЕНО: Правильная логика разблокировки уроков"""
+    """ИСПРАВЛЕНО: Правильная работа с ключами уроков и первый урок в каждой теме"""
     logger.info(f"[_get_available_lessons] Начало для темы {topic_id}")
     
+    # ИЗМЕНЕНИЕ: Первый урок ВСЕГДА доступен в ЛЮБОЙ теме
+    available = [1]
+    
     if not user_progress: 
-        logger.info(f"[_get_available_lessons] Нет прогресса - доступен только урок 1")
-        return [1]
+        logger.info(f"[_get_available_lessons] Нет прогресса - доступен урок 1 в теме {topic_id}")
+        return available
     
     topic_progress = user_progress.get("topics_progress", {}).get(topic_id)
     if not topic_progress: 
-        logger.info(f"[_get_available_lessons] Нет прогресса по теме - доступен только урок 1")
-        return [1]
+        logger.info(f"[_get_available_lessons] Нет прогресса по теме {topic_id} - доступен урок 1")
+        return available
     
     lessons_data = topic_progress.get("lessons", {})
-    logger.info(f"[_get_available_lessons] lessons_data: {lessons_data}")
-    
-    available = [1]  # Первый урок всегда доступен
     total_lessons = len(LEARNING_STRUCTURE[topic_id]["lessons"])
-    logger.info(f"[_get_available_lessons] total_lessons: {total_lessons}")
-
-    # ИСПРАВЛЕНО: Проверяем каждый урок по порядку и используем правильные ключи
+    
+    # КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: используем lesson_id как int, НЕ как строку
     for lesson_id in range(1, total_lessons + 1):
-        # ВАЖНО: Используем lesson_id как ключ напрямую (число), а не строку
-        lesson_data = lessons_data.get(lesson_id)  # Без str()!
-        logger.info(f"[_get_available_lessons] Проверяем урок {lesson_id}: {lesson_data}")
+        lesson_data = lessons_data.get(lesson_id)  # Убрали str()!
         
         if lesson_data and lesson_data.get("is_completed"):
             next_lesson = lesson_id + 1
             if next_lesson <= total_lessons and next_lesson not in available:
                 available.append(next_lesson)
-                logger.info(f"[_get_available_lessons] ✅ Урок {next_lesson} разблокирован после завершения урока {lesson_id}")
+                logger.info(f"[_get_available_lessons] ✅ Урок {next_lesson} разблокирован")
     
-    logger.info(f"[_get_available_lessons] ✅ Итоговый результат: {available}")
+    logger.info(f"[_get_available_lessons] ✅ Доступные уроки в {topic_id}: {available}")
     return available
 
 def _get_lesson_status(topic_id: str, lesson_id: int, user_progress: Dict[str, Any]) -> Dict[str, Any]:
@@ -251,7 +224,7 @@ def _get_lesson_status(topic_id: str, lesson_id: int, user_progress: Dict[str, A
         topic_progress = topics_progress.get(topic_id, {})
         lessons_progress = topic_progress.get("lessons", {})
         # ВАЖНО: Используем lesson_id как число, НЕ как строку
-        lesson_data = lessons_progress.get(lesson_id)  # Без str()!
+        lesson_data = lessons_progress.get(lesson_id)
         
         if lesson_data:
             return {

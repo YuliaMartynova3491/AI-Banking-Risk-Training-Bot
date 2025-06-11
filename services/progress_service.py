@@ -1,395 +1,289 @@
+# Файл: services/progress_service.py
 """
-Сервис для работы с прогрессом обучения
+Сервис управления прогрессом обучения - УЛУЧШЕННАЯ ВЕРСИЯ
+Основные улучшения:
+1. Правильная логика обновления прогресса
+2. Исправлена функция update_lesson_completion
+3. Добавлены методы для отладки и мониторинга
+4. Улучшена производительность
 """
 import logging
-from typing import Dict, List, Optional, Tuple, Any
-from datetime import datetime, timedelta
-
+from typing import Dict, Any, Optional
+from datetime import datetime
 from core.database import db_service
-from core.enums import TopicStatus, LessonStatus, ScoreRanges, TOPIC_ORDER
 from config.bot_config import LEARNING_STRUCTURE
 
 logger = logging.getLogger(__name__)
 
-
 class ProgressService:
-    """Сервис управления прогрессом обучения"""
+    """Сервис для управления прогрессом обучения пользователей"""
     
-    def __init__(self):
-        self.db_service = db_service
-    
-    def get_user_learning_path(self, user_id: str) -> Dict[str, Any]:
-        """Получить персональный путь обучения пользователя"""
+    @staticmethod
+    def update_lesson_completion(user_id: int, topic_id: str, lesson_id: int, 
+                               score: int, passed: bool = None) -> Dict[str, Any]:
+        """
+        ИСПРАВЛЕНО: Обновление результатов урока с правильной логикой
+        """
         try:
-            progress = self.db_service.get_user_progress_summary(user_id)
+            logger.info(f"[update_lesson_completion] user_id={user_id}, topic_id={topic_id}, lesson_id={lesson_id}, score={score}, passed={passed}")
             
-            learning_path = {
-                "current_position": {
-                    "topic": progress.current_topic,
-                    "lesson": progress.current_lesson
-                },
-                "available_topics": self._get_available_topics(progress),
-                "available_lessons": {},
-                "recommendations": self._generate_learning_recommendations(progress)
-            }
+            # Получаем текущий прогресс
+            user_progress = db_service.get_user_progress(user_id)
+            if not user_progress:
+                user_progress = ProgressService._create_initial_progress()
             
-            # Определяем доступные уроки для каждой доступной темы
-            for topic_id in learning_path["available_topics"]:
-                learning_path["available_lessons"][topic_id] = self._get_available_lessons(
-                    topic_id, progress
-                )
+            # Инициализируем структуру если нужно
+            if "topics_progress" not in user_progress:
+                user_progress["topics_progress"] = {}
             
-            return learning_path
-            
-        except Exception as e:
-            logger.error(f"Ошибка получения пути обучения для {user_id}: {e}")
-            return self._get_default_learning_path()
-    
-    def calculate_topic_progress(self, user_id: str, topic_id: str) -> Dict[str, Any]:
-        """Вычислить прогресс по теме"""
-        try:
-            if topic_id not in LEARNING_STRUCTURE:
-                return {"error": "Topic not found"}
-            
-            progress = self.db_service.get_user_progress_summary(user_id)
-            topic_data = LEARNING_STRUCTURE[topic_id]
-            total_lessons = len(topic_data["lessons"])
-            
-            if topic_id not in progress.topics_progress:
-                return {
-                    "topic_id": topic_id,
-                    "status": TopicStatus.AVAILABLE.value,
+            if topic_id not in user_progress["topics_progress"]:
+                user_progress["topics_progress"][topic_id] = {
+                    "lessons": {},
                     "completed_lessons": 0,
-                    "total_lessons": total_lessons,
-                    "completion_percentage": 0,
-                    "average_score": 0,
-                    "attempts": 0
+                    "total_score": 0,
+                    "total_attempts": 0
                 }
             
-            topic_progress = progress.topics_progress[topic_id]
-            completed_lessons = topic_progress.get("completed_lessons", 0)
-            average_score = topic_progress.get("average_score", 0)
-            total_attempts = topic_progress.get("total_attempts", 0)
+            topic_progress = user_progress["topics_progress"][topic_id]
             
-            # Определяем статус темы
-            if completed_lessons == 0:
-                status = TopicStatus.AVAILABLE
-            elif completed_lessons == total_lessons:
-                status = TopicStatus.COMPLETED
-            else:
-                status = TopicStatus.IN_PROGRESS
-            
-            return {
-                "topic_id": topic_id,
-                "status": status.value,
-                "completed_lessons": completed_lessons,
-                "total_lessons": total_lessons,
-                "completion_percentage": (completed_lessons / total_lessons) * 100,
-                "average_score": average_score,
-                "attempts": total_attempts,
-                "performance_level": self._get_performance_level(average_score)
-            }
-            
-        except Exception as e:
-            logger.error(f"Ошибка расчета прогресса темы {topic_id} для {user_id}: {e}")
-            return {"error": str(e)}
-    
-    def calculate_lesson_progress(self, user_id: str, topic_id: str, lesson_id: int) -> Dict[str, Any]:
-        """Вычислить прогресс по уроку"""
-        try:
-            lesson_progress = self.db_service.get_lesson_progress(user_id, topic_id, lesson_id)
-            
-            if not lesson_progress:
-                return {
-                    "topic_id": topic_id,
-                    "lesson_id": lesson_id,
-                    "status": LessonStatus.AVAILABLE.value,
+            # ИСПРАВЛЕНО: Используем lesson_id как число, НЕ как строку
+            if lesson_id not in topic_progress["lessons"]:
+                topic_progress["lessons"][lesson_id] = {
                     "attempts": 0,
                     "best_score": 0,
-                    "last_score": 0,
-                    "is_completed": False
+                    "is_completed": False,
+                    "completion_date": None
                 }
             
-            # Определяем статус урока
-            if lesson_progress.is_completed:
-                status = LessonStatus.COMPLETED
-            elif lesson_progress.attempts > 0:
-                status = LessonStatus.IN_PROGRESS
-            else:
-                status = LessonStatus.AVAILABLE
+            lesson_data = topic_progress["lessons"][lesson_id]
+            
+            # Обновляем статистику урока
+            lesson_data["attempts"] += 1
+            lesson_data["best_score"] = max(lesson_data["best_score"], score)
+            
+            # ИСПРАВЛЕНО: Логика завершения урока
+            passing_score = 70  # Минимальный балл для прохождения
+            
+            if passed is None:
+                passed = score >= passing_score
+            
+            # Если урок пройден и еще не был завершен
+            if passed and not lesson_data["is_completed"]:
+                lesson_data["is_completed"] = True
+                lesson_data["completion_date"] = datetime.now().isoformat()
+                
+                # Увеличиваем счетчик завершенных уроков в теме
+                topic_progress["completed_lessons"] += 1
+                logger.info(f"[update_lesson_completion] ✅ Урок {lesson_id} темы {topic_id} завершен! Всего завершено: {topic_progress['completed_lessons']}")
+            
+            # Обновляем общую статистику темы
+            topic_progress["total_attempts"] += 1
+            
+            # Пересчитываем общий прогресс пользователя
+            ProgressService._recalculate_total_progress(user_progress)
+            
+            # Сохраняем в базу
+            db_service.update_user_progress(user_id, user_progress)
+            
+            logger.info(f"[update_lesson_completion] ✅ Прогресс успешно обновлен")
             
             return {
-                "topic_id": topic_id,
-                "lesson_id": lesson_id,
-                "status": status.value,
-                "attempts": lesson_progress.attempts,
-                "best_score": lesson_progress.best_score,
-                "last_score": lesson_progress.last_attempt_score,
-                "is_completed": lesson_progress.is_completed,
-                "started_at": lesson_progress.started_at.isoformat() if lesson_progress.started_at else None,
-                "completed_at": lesson_progress.completed_at.isoformat() if lesson_progress.completed_at else None,
-                "performance_level": self._get_performance_level(lesson_progress.best_score)
+                "success": True,
+                "lesson_completed": passed and lesson_data["is_completed"],
+                "total_completed": user_progress.get("total_lessons_completed", 0),
+                "topic_completed_lessons": topic_progress["completed_lessons"]
             }
             
         except Exception as e:
-            logger.error(f"Ошибка расчета прогресса урока {lesson_id} для {user_id}: {e}")
-            return {"error": str(e)}
+            logger.error(f"[update_lesson_completion] ❌ Ошибка обновления прогресса: {e}")
+            return {"success": False, "error": str(e)}
     
-    def get_overall_statistics(self, user_id: str) -> Dict[str, Any]:
-        """Получить общую статистику пользователя"""
+    @staticmethod
+    def _recalculate_total_progress(user_progress: Dict[str, Any]) -> None:
+        """Пересчитывает общий прогресс пользователя"""
         try:
-            progress = self.db_service.get_user_progress_summary(user_id)
+            total_completed = 0
+            total_score = 0
+            total_attempts = 0
             
-            # Общие метрики
-            total_lessons_available = sum(
-                len(topic_data["lessons"]) 
-                for topic_data in LEARNING_STRUCTURE.values()
-            )
+            topics_progress = user_progress.get("topics_progress", {})
             
-            completion_rate = (progress.total_lessons_completed / total_lessons_available) * 100
-            
-            # Анализ по темам
-            topics_stats = {}
-            for topic_id in TOPIC_ORDER:
-                topics_stats[topic_id] = self.calculate_topic_progress(user_id, topic_id)
-            
-            # Определяем слабые места
-            weak_topics = [
-                topic_id for topic_id, stats in topics_stats.items()
-                if stats.get("average_score", 0) < ScoreRanges.GOOD_MIN and stats.get("attempts", 0) > 0
-            ]
-            
-            # Определяем сильные стороны
-            strong_topics = [
-                topic_id for topic_id, stats in topics_stats.items()
-                if stats.get("average_score", 0) >= ScoreRanges.EXCELLENT_MIN
-            ]
-            
-            return {
-                "user_id": user_id,
-                "overall_completion": completion_rate,
-                "total_lessons_completed": progress.total_lessons_completed,
-                "total_lessons_available": total_lessons_available,
-                "average_score": progress.total_score,
-                "topics_statistics": topics_stats,
-                "weak_topics": weak_topics,
-                "strong_topics": strong_topics,
-                "learning_streak": self._calculate_learning_streak(user_id),
-                "estimated_completion_time": self._estimate_completion_time(progress)
-            }
-            
-        except Exception as e:
-            logger.error(f"Ошибка получения статистики для {user_id}: {e}")
-            return {"error": str(e)}
-    
-    def check_achievements(self, user_id: str) -> List[Dict[str, Any]]:
-        """Проверить достижения пользователя"""
-        try:
-            progress = self.db_service.get_user_progress_summary(user_id)
-            achievements = []
-            
-            # Достижения по количеству уроков
-            if progress.total_lessons_completed >= 1:
-                achievements.append({
-                    "id": "first_lesson",
-                    "title": "Первые шаги",
-                    "description": "Завершен первый урок",
-                    "icon": "🎯"
-                })
-            
-            if progress.total_lessons_completed >= 5:
-                achievements.append({
-                    "id": "five_lessons",
-                    "title": "Активный ученик",
-                    "description": "Завершено 5 уроков",
-                    "icon": "📚"
-                })
-            
-            # Достижения по оценкам
-            if progress.total_score >= ScoreRanges.EXCELLENT_MIN:
-                achievements.append({
-                    "id": "excellent_student",
-                    "title": "Отличник",
-                    "description": f"Средняя оценка {progress.total_score:.1f}%",
-                    "icon": "⭐"
-                })
-            
-            # Достижения по темам
-            for topic_id in TOPIC_ORDER:
-                topic_stats = self.calculate_topic_progress(user_id, topic_id)
-                if topic_stats.get("status") == TopicStatus.COMPLETED.value:
-                    topic_title = LEARNING_STRUCTURE[topic_id]["title"]
-                    achievements.append({
-                        "id": f"topic_{topic_id}",
-                        "title": f"Мастер темы",
-                        "description": f"Завершена тема: {topic_title}",
-                        "icon": "🏆"
-                    })
-            
-            return achievements
-            
-        except Exception as e:
-            logger.error(f"Ошибка проверки достижений для {user_id}: {e}")
-            return []
-    
-    def generate_progress_report(self, user_id: str) -> str:
-        """Сгенерировать текстовый отчет о прогрессе"""
-        try:
-            stats = self.get_overall_statistics(user_id)
-            
-            if "error" in stats:
-                return "Ошибка генерации отчета"
-            
-            report = f"📊 **Отчет о прогрессе обучения**\n\n"
-            report += f"🎯 Общий прогресс: {stats['overall_completion']:.1f}%\n"
-            report += f"✅ Завершено уроков: {stats['total_lessons_completed']}/{stats['total_lessons_available']}\n"
-            report += f"⭐ Средняя оценка: {stats['average_score']:.1f}%\n\n"
-            
-            # Прогресс по темам
-            report += "📚 **Прогресс по темам:**\n"
-            for topic_id, topic_stats in stats['topics_statistics'].items():
-                topic_title = LEARNING_STRUCTURE[topic_id]["title"]
-                completion = topic_stats.get('completion_percentage', 0)
-                avg_score = topic_stats.get('average_score', 0)
+            for topic_id, topic_data in topics_progress.items():
+                completed_lessons = topic_data.get("completed_lessons", 0)
+                total_completed += completed_lessons
                 
-                status_emoji = "✅" if completion == 100 else "🔄" if completion > 0 else "⏳"
-                report += f"{status_emoji} {topic_title}: {completion:.0f}% ({avg_score:.1f}%)\n"
+                lessons_data = topic_data.get("lessons", {})
+                for lesson_data in lessons_data.values():
+                    if lesson_data.get("is_completed"):
+                        total_score += lesson_data.get("best_score", 0)
+                    total_attempts += lesson_data.get("attempts", 0)
             
-            # Рекомендации
-            if stats['weak_topics']:
-                report += f"\n💡 **Области для улучшения:**\n"
-                for topic_id in stats['weak_topics']:
-                    topic_title = LEARNING_STRUCTURE[topic_id]["title"]
-                    report += f"• {topic_title}\n"
+            # Вычисляем средний балл
+            avg_score = (total_score / total_completed) if total_completed > 0 else 0
             
-            if stats['strong_topics']:
-                report += f"\n🌟 **Сильные стороны:**\n"
-                for topic_id in stats['strong_topics']:
-                    topic_title = LEARNING_STRUCTURE[topic_id]["title"]
-                    report += f"• {topic_title}\n"
+            # Обновляем общие метрики
+            user_progress.update({
+                "total_lessons_completed": total_completed,
+                "total_score": round(avg_score, 1),
+                "total_attempts": total_attempts,
+                "last_activity": datetime.now().isoformat()
+            })
             
-            return report
-            
-        except Exception as e:
-            logger.error(f"Ошибка генерации отчета для {user_id}: {e}")
-            return "Ошибка генерации отчета"
-    
-    # Вспомогательные методы
-    
-    def _get_available_topics(self, progress) -> List[str]:
-        """Определить доступные темы"""
-        available = ["основы_рисков"]  # Первая тема всегда доступна
-        
-        for i, topic_id in enumerate(TOPIC_ORDER[1:], 1):
-            prev_topic = TOPIC_ORDER[i-1]
-            prev_stats = self.calculate_topic_progress(progress.user_id, prev_topic)
-            
-            if prev_stats.get("status") == TopicStatus.COMPLETED.value:
-                available.append(topic_id)
-            else:
-                break
-        
-        return available
-    
-    def _get_available_lessons(self, topic_id: str, progress) -> List[int]:
-        """Определить доступные уроки в теме"""
-        if topic_id not in progress.topics_progress:
-            return [1]  # Только первый урок доступен
-        
-        topic_progress = progress.topics_progress[topic_id]
-        lessons_data = topic_progress.get("lessons", {})
-        available = [1]  # Первый урок всегда доступен
-        
-        total_lessons = len(LEARNING_STRUCTURE[topic_id]["lessons"])
-        
-        for lesson_id in range(1, total_lessons + 1):
-            lesson_key = str(lesson_id)
-            if lesson_key in lessons_data and lessons_data[lesson_key].get("is_completed"):
-                next_lesson = lesson_id + 1
-                if next_lesson <= total_lessons and next_lesson not in available:
-                    available.append(next_lesson)
-        
-        return available
-    
-    def _generate_learning_recommendations(self, progress) -> List[str]:
-        """Генерировать рекомендации по обучению"""
-        recommendations = []
-        
-        if progress.total_lessons_completed == 0:
-            recommendations.append("Начните с основ - первая тема ждет вас!")
-        elif progress.total_score < ScoreRanges.GOOD_MIN:
-            recommendations.append("Рекомендуем повторить пройденный материал")
-            recommendations.append("Используйте помощь AI-агента при затруднениях")
-        elif progress.total_score >= ScoreRanges.EXCELLENT_MIN:
-            recommendations.append("Отличные результаты! Продолжайте в том же духе")
-        
-        return recommendations
-    
-    def _get_performance_level(self, score: float) -> str:
-        """Определить уровень успеваемости"""
-        if score >= ScoreRanges.EXCELLENT_MIN:
-            return "excellent"
-        elif score >= ScoreRanges.GOOD_MIN:
-            return "good"
-        elif score >= ScoreRanges.SATISFACTORY_MIN:
-            return "satisfactory"
-        else:
-            return "poor"
-    
-    def _calculate_learning_streak(self, user_id: str) -> int:
-        """Вычислить серию активного обучения (дни подряд)"""
-        # Упрощенная версия - можно расширить добавив отслеживание активности по дням
-        try:
-            lessons_progress = self.db_service.get_user_lessons_progress(user_id)
-            if not lessons_progress:
-                return 0
-            
-            # Подсчитываем количество дней с активностью
-            active_days = set()
-            for lesson in lessons_progress:
-                if lesson.completed_at:
-                    active_days.add(lesson.completed_at.date())
-            
-            return len(active_days)
+            logger.info(f"[_recalculate_total_progress] Пересчитан прогресс: завершено={total_completed}, средний_балл={avg_score}")
             
         except Exception as e:
-            logger.error(f"Ошибка расчета серии обучения для {user_id}: {e}")
-            return 0
+            logger.error(f"[_recalculate_total_progress] Ошибка пересчета: {e}")
     
-    def _estimate_completion_time(self, progress) -> Optional[str]:
-        """Оценить время до завершения обучения"""
-        try:
-            if progress.total_lessons_completed == 0:
-                return "Невозможно оценить"
-            
-            total_lessons = sum(len(topic_data["lessons"]) for topic_data in LEARNING_STRUCTURE.values())
-            remaining_lessons = total_lessons - progress.total_lessons_completed
-            
-            if remaining_lessons == 0:
-                return "Обучение завершено"
-            
-            # Упрощенная оценка: 1 урок = 15 минут
-            estimated_minutes = remaining_lessons * 15
-            
-            if estimated_minutes < 60:
-                return f"~{estimated_minutes} минут"
-            else:
-                hours = estimated_minutes // 60
-                return f"~{hours} часов"
-                
-        except Exception as e:
-            logger.error(f"Ошибка оценки времени завершения: {e}")
-            return "Невозможно оценить"
-    
-    def _get_default_learning_path(self) -> Dict[str, Any]:
-        """Получить путь обучения по умолчанию"""
+    @staticmethod
+    def _create_initial_progress() -> Dict[str, Any]:
+        """Создает начальную структуру прогресса"""
         return {
-            "current_position": {"topic": "основы_рисков", "lesson": 1},
-            "available_topics": ["основы_рисков"],
-            "available_lessons": {"основы_рисков": [1]},
-            "recommendations": ["Начните с изучения основ рисков"]
+            "topics_progress": {},
+            "total_lessons_completed": 0,
+            "total_score": 0,
+            "total_attempts": 0,
+            "created_at": datetime.now().isoformat(),
+            "last_activity": datetime.now().isoformat()
         }
+    
+    @staticmethod
+    def get_lesson_status(user_id: int, topic_id: str, lesson_id: int) -> Dict[str, Any]:
+        """Получает статус конкретного урока"""
+        try:
+            user_progress = db_service.get_user_progress(user_id)
+            if not user_progress:
+                return {"is_completed": False, "attempts": 0, "best_score": 0}
+            
+            topic_progress = user_progress.get("topics_progress", {}).get(topic_id, {})
+            lessons_data = topic_progress.get("lessons", {})
+            lesson_data = lessons_data.get(lesson_id, {})
+            
+            return {
+                "is_completed": lesson_data.get("is_completed", False),
+                "attempts": lesson_data.get("attempts", 0),
+                "best_score": lesson_data.get("best_score", 0),
+                "completion_date": lesson_data.get("completion_date")
+            }
+            
+        except Exception as e:
+            logger.error(f"Ошибка получения статуса урока: {e}")
+            return {"is_completed": False, "attempts": 0, "best_score": 0}
+    
+    @staticmethod
+    def get_topic_progress(user_id: int, topic_id: str) -> Dict[str, Any]:
+        """Получает прогресс по конкретной теме"""
+        try:
+            user_progress = db_service.get_user_progress(user_id)
+            if not user_progress:
+                return {"completed_lessons": 0, "total_lessons": 0, "progress_percentage": 0}
+            
+            topic_progress = user_progress.get("topics_progress", {}).get(topic_id, {})
+            completed_lessons = topic_progress.get("completed_lessons", 0)
+            
+            total_lessons = len(LEARNING_STRUCTURE.get(topic_id, {}).get("lessons", []))
+            progress_percentage = (completed_lessons / total_lessons * 100) if total_lessons > 0 else 0
+            
+            return {
+                "completed_lessons": completed_lessons,
+                "total_lessons": total_lessons,
+                "progress_percentage": round(progress_percentage, 1),
+                "total_attempts": topic_progress.get("total_attempts", 0)
+            }
+            
+        except Exception as e:
+            logger.error(f"Ошибка получения прогресса темы: {e}")
+            return {"completed_lessons": 0, "total_lessons": 0, "progress_percentage": 0}
+    
+    @staticmethod
+    def reset_user_progress(user_id: int) -> bool:
+        """Сбрасывает весь прогресс пользователя"""
+        try:
+            initial_progress = ProgressService._create_initial_progress()
+            db_service.update_user_progress(user_id, initial_progress)
+            logger.info(f"Прогресс пользователя {user_id} сброшен")
+            return True
+        except Exception as e:
+            logger.error(f"Ошибка сброса прогресса: {e}")
+            return False
+    
+    @staticmethod
+    def get_user_achievements(user_id: int) -> Dict[str, Any]:
+        """Получает достижения пользователя"""
+        try:
+            user_progress = db_service.get_user_progress(user_id)
+            if not user_progress:
+                return {"achievements": [], "total_points": 0}
+            
+            achievements = []
+            total_completed = user_progress.get("total_lessons_completed", 0)
+            avg_score = user_progress.get("total_score", 0)
+            
+            # Достижения за количество завершенных уроков
+            if total_completed >= 1:
+                achievements.append("🎯 Первые шаги")
+            if total_completed >= 5:
+                achievements.append("📚 Знаток")
+            if total_completed >= 10:
+                achievements.append("🏆 Эксперт")
+            
+            # Достижения за качество
+            if avg_score >= 80:
+                achievements.append("⭐ Отличник")
+            if avg_score >= 90:
+                achievements.append("🌟 Мастер")
+            
+            # Достижения за темы
+            topics_progress = user_progress.get("topics_progress", {})
+            for topic_id, topic_data in topics_progress.items():
+                total_lessons = len(LEARNING_STRUCTURE.get(topic_id, {}).get("lessons", []))
+                completed = topic_data.get("completed_lessons", 0)
+                if completed == total_lessons and total_lessons > 0:
+                    topic_title = LEARNING_STRUCTURE[topic_id]["title"]
+                    achievements.append(f"✅ {topic_title}")
+            
+            return {
+                "achievements": achievements,
+                "total_points": len(achievements) * 10,
+                "completion_rate": round((total_completed / 12 * 100), 1) if total_completed > 0 else 0
+            }
+            
+        except Exception as e:
+            logger.error(f"Ошибка получения достижений: {e}")
+            return {"achievements": [], "total_points": 0}
+    
+    @staticmethod 
+    def debug_user_progress(user_id: int) -> str:
+        """НОВЫЙ МЕТОД: Отладочная информация о прогрессе пользователя"""
+        try:
+            user_progress = db_service.get_user_progress(user_id)
+            if not user_progress:
+                return "❌ Прогресс пользователя не найден"
+            
+            debug_info = []
+            debug_info.append(f"🔍 ОТЛАДКА ПРОГРЕССА ПОЛЬЗОВАТЕЛЯ {user_id}")
+            debug_info.append(f"📊 Общая статистика:")
+            debug_info.append(f"   - Завершено уроков: {user_progress.get('total_lessons_completed', 0)}")
+            debug_info.append(f"   - Средний балл: {user_progress.get('total_score', 0)}")
+            debug_info.append(f"   - Всего попыток: {user_progress.get('total_attempts', 0)}")
+            
+            topics_progress = user_progress.get("topics_progress", {})
+            debug_info.append(f"\n📚 Прогресс по темам:")
+            
+            for topic_id, topic_data in topics_progress.items():
+                debug_info.append(f"   🎯 {topic_id}:")
+                debug_info.append(f"      - Завершено уроков: {topic_data.get('completed_lessons', 0)}")
+                debug_info.append(f"      - Попыток: {topic_data.get('total_attempts', 0)}")
+                
+                lessons_data = topic_data.get("lessons", {})
+                debug_info.append(f"      - Уроки:")
+                for lesson_id, lesson_data in lessons_data.items():
+                    status = "✅" if lesson_data.get("is_completed") else "❌"
+                    debug_info.append(f"        {status} Урок {lesson_id}: {lesson_data.get('attempts', 0)} попыток, лучший результат: {lesson_data.get('best_score', 0)}%")
+            
+            return "\n".join(debug_info)
+            
+        except Exception as e:
+            return f"❌ Ошибка отладки: {e}"
 
-
-# Глобальный экземпляр сервиса
+# Создаем экземпляр сервиса
 progress_service = ProgressService()
